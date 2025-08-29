@@ -1,0 +1,286 @@
+# Oracle与GaussDB数据一致性校验工具 - 详细示例配置文件
+
+# =============================================================================
+# 数据库连接配置
+# =============================================================================
+databases:
+  oracle:
+    # Oracle JDBC连接字符串示例：
+    # - 本地连接: jdbc:oracle:thin:@localhost:1521:orcl
+    # - 远程连接: jdbc:oracle:thin:@192.168.1.100:1521:orcl
+    # - 服务名连接: jdbc:oracle:thin:@//hostname:port/service_name
+    url: "jdbc:oracle:thin:@localhost:1521:orcl"
+    user: "hr"
+    password: "hr123"
+    driver_jar: "ojdbc8.jar"
+  
+  gauss:
+    # GaussDB JDBC连接字符串示例：
+    # - 本地连接: jdbc:postgresql://localhost:5432/postgres
+    # - 远程连接: jdbc:postgresql://192.168.1.101:5432/testdb
+    url: "jdbc:postgresql://localhost:5432/testdb"
+    user: "gaussuser"
+    password: "gauss123"
+    driver_jar: "gsjdbc4-1.1.jar"
+
+# =============================================================================
+# 性能配置
+# =============================================================================
+performance:
+  # 并发线程数 - 建议根据数据库性能和网络状况调整
+  # 推荐值: 2-8，默认4
+  thread_count: 4
+
+# =============================================================================
+# Schema映射配置 (可选)
+# =============================================================================
+schema_mapping:
+  # Oracle schema与GaussDB schema的映射关系
+  # 格式: "oracle_schema": "gauss_schema"
+  # 如果不配置，则假设两边schema名称相同
+  hr: public          # Oracle的HR schema映射到GaussDB的public schema
+  sales: sales_db     # Oracle的SALES schema映射到GaussDB的sales_db schema
+  finance: fin        # Oracle的FINANCE schema映射到GaussDB的fin schema
+  # system: public    # 可以将Oracle系统schema映射到GaussDB的public schema
+
+# =============================================================================
+# 检查范围配置
+# =============================================================================
+check_scope:
+  # 方式1: 检查指定的表（推荐用于全表数据校验）
+  # 表名支持 schema.table 格式，便于跨用户访问表
+  # 如果只写表名，会在当前schema中查找
+  tables:
+    - hr.employees      # HR schema下的员工表
+    - hr.departments    # HR schema下的部门表
+    - sales.customers   # SALES schema下的客户表
+    - finance.orders    # FINANCE schema下的订单表
+    - products          # 当前用户下的产品表（不指定schema）
+    # - schema.table_name
+  
+  # 方式2: 自动发现schema中的所有表（适用于大批量表检查）
+  # 会自动查询Oracle的dba_tables视图获取指定schema下的所有表
+  # 注意：需要Oracle用户具有SELECT on dba_tables的权限
+  schemas:
+    - hr                # 自动发现HR schema下的所有表
+    - sales             # 自动发现SALES schema下的所有表
+    # - finance         # 可以添加更多schema
+    # - system          # 系统schema（通常包含大量系统表，建议配合exclude_tables使用）
+  
+  # 方式3: 自定义SQL查询（适用于特定条件的数据校验）
+  # 支持复杂SQL、多行格式、包含分号的字符串等
+  custom_sqls:
+    # 示例1: 检查特定时间范围的数据
+    - name: "近期订单数据"
+      description: "检查2023年以来的待处理订单"
+      sql: |
+        SELECT * FROM orders 
+        WHERE order_date >= DATE '2023-01-01' 
+          AND status IN ('PENDING', 'PROCESSING')
+          AND amount > 0
+    
+    # 示例2: 复杂聚合查询
+    - name: "活跃用户统计"
+      description: "最近30天下单超过5次的用户"
+      sql: |
+        SELECT 
+          user_id,
+          user_name,
+          count(*) as order_count,
+          sum(amount) as total_amount
+        FROM orders o
+        JOIN users u ON o.user_id = u.id
+        WHERE o.create_time > sysdate - 30
+        GROUP BY user_id, user_name
+        HAVING count(*) > 5
+        ORDER BY order_count DESC
+    
+    # 示例3: 包含分号的查询（在YAML中不会有解析问题）
+    - name: "产品分类统计"
+      description: "包含特殊字符的产品分类"
+      sql: |
+        SELECT 
+          product_id,
+          product_name,
+          CASE 
+            WHEN price > 100 THEN 'High; Premium Product'
+            WHEN price > 50 THEN 'Medium; Standard Product'
+            ELSE 'Low; Basic Product'
+          END as price_category,
+          description
+        FROM products 
+        WHERE description LIKE '%special; offer%'
+           OR description LIKE '%discount; sale%'
+        ORDER BY price DESC
+    
+    # 示例4: 复杂JOIN查询
+    - name: "订单详情汇总"
+      description: "订单和订单项的汇总统计"
+      sql: |
+        SELECT 
+          o.order_id,
+          o.order_date,
+          o.customer_id,
+          c.customer_name,
+          COUNT(oi.item_id) as item_count,
+          SUM(oi.quantity) as total_quantity,
+          SUM(oi.quantity * oi.unit_price) as total_amount
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE o.order_date >= ADD_MONTHS(SYSDATE, -3)
+        GROUP BY o.order_id, o.order_date, o.customer_id, c.customer_name
+        HAVING SUM(oi.quantity * oi.unit_price) > 1000
+        ORDER BY total_amount DESC
+
+# =============================================================================
+# 剔除表配置 (可选)
+# =============================================================================
+exclude_tables:
+  # 从检查范围中排除的表，支持精确匹配和通配符模式
+  # 通配符支持: * 表示任意字符，会自动转换为正则表达式
+  # 注意：剔除规则会应用到tables和schemas两种方式发现的所有表
+  
+  # 系统表和日志表（通常不需要数据一致性检查）
+  - system.logmnr*              # Oracle LogMiner相关表（通配符）
+  - system.mview$*              # 物化视图相关表（通配符）
+  - system.aq$*                 # 高级队列相关表（通配符）
+  - system.rolling$*            # Rolling相关表（通配符）  
+  - system.logstdby$*           # Logical Standby相关表（通配符）
+  - system.ol$*                 # Outline相关表（通配符）
+  
+  # 临时表和测试表
+  - *.temp_*                    # 所有schema下的临时表（通配符）
+  - *.test_*                    # 所有schema下的测试表（通配符）
+  - hr.temp_employees           # 特定的临时表（精确匹配）
+  
+  # 其他不需要检查的表
+  - system.help                 # Oracle帮助表（精确匹配）
+  - system.sqlplus_product_profile  # SQL*Plus配置表（精确匹配）
+  - audit.audit_trail           # 审计表（通常变化频繁）
+  
+  # 大表或性能敏感表（可选择性排除）
+  # - logs.access_log           # 访问日志表
+  # - metrics.performance_data  # 性能监控数据表
+
+# =============================================================================
+# 使用场景示例
+# =============================================================================
+
+# 场景1: 仅检查特定表的完整数据
+# check_scope:
+#   tables:
+#     - hr.employees
+#     - hr.departments
+#     - sales.customers
+#   schemas: []
+#   custom_sqls: []
+# exclude_tables: []
+
+# 场景2: 自动发现schema中的所有表（排除系统表）
+# schema_mapping:
+#   hr: public
+#   sales: sales_db
+# check_scope:
+#   tables: []
+#   schemas:
+#     - hr
+#     - sales
+#   custom_sqls: []
+# exclude_tables:
+#   - "*.temp_*"
+#   - "*.test_*"
+#   - hr.backup_*
+
+# 场景3: 仅检查自定义查询
+# check_scope:
+#   tables: []
+#   schemas: []
+#   custom_sqls:
+#     - name: "大表分区数据"
+#       sql: |
+#         SELECT * FROM large_table 
+#         WHERE partition_key = '2023'
+#     - name: "汇总表数据"
+#       sql: "SELECT count(*) FROM summary_table"
+
+# 场景4: 混合检查（推荐用于复杂环境）
+# schema_mapping:
+#   system: public
+# check_scope:
+#   tables:
+#     - hr.employees        # 重要的业务表精确指定
+#     - finance.orders
+#   schemas:
+#     - sales               # 销售schema自动发现
+#   custom_sqls:
+#     - name: "近期大表数据"
+#       sql: |
+#         SELECT * FROM large_table 
+#         WHERE create_time > sysdate - 30
+# exclude_tables:
+#   - system.logmnr*        # 排除LogMiner表
+#   - system.mview$*        # 排除物化视图表
+#   - "*.temp_*"            # 排除所有临时表
+#   - sales.test_customers  # 排除特定测试表
+
+# 场景5: 系统迁移验证（包含系统表但排除不需要的）
+# schema_mapping:
+#   system: public
+#   hr: public
+#   sales: sales_db
+# check_scope:
+#   tables: []
+#   schemas:
+#     - system
+#     - hr
+#     - sales
+#   custom_sqls: []
+# exclude_tables:
+#   - system.logmnr*        # Oracle LogMiner表
+#   - system.mview$*        # 物化视图表  
+#   - system.aq$*           # 高级队列表
+#   - system.rolling$*      # Rolling表
+#   - system.logstdby$*     # Logical Standby表
+#   - system.ol$*           # Outline表
+#   - "*.temp_*"            # 临时表
+#   - "*.backup_*"          # 备份表
+
+# =============================================================================
+# 注意事项
+# =============================================================================
+# 1. 确保Oracle用户具有以下权限：
+#    - SELECT on DBA_TABLES 
+#    - SELECT on 所有待检查的表
+#
+# 2. 确保GaussDB用户具有以下权限：
+#    - SELECT on 所有待检查的表
+#
+# 3. JDBC驱动文件必须放在工具所在目录下，或添加到classpath中
+#
+# 4. 表名和SQL语句中的标识符大小写敏感
+#
+# 5. 建议先用小表或小数据量进行测试
+#
+# 6. 新功能说明：
+#    - schema_mapping: 支持Oracle与GaussDB之间的schema名称映射
+#    - schemas: 支持自动发现schema中的所有表，无需手工列举
+#    - exclude_tables: 支持排除不需要检查的表，支持通配符模式
+#    - 可以混合使用tables、schemas、custom_sqls三种方式
+#
+# 7. 通配符规则：
+#    - * 匹配任意字符（包括空字符）
+#    - system.logmnr* 匹配 system.logmnr_session$, system.logmnr_log$ 等
+#    - *.temp_* 匹配任意schema下名称包含temp_的表
+#    - 精确匹配优先于通配符匹配
+#
+# 8. 性能优化建议：
+#    - 对于大量表的schema，建议使用exclude_tables排除不必要的表
+#    - 系统表通常变化频繁且与业务无关，建议排除
+#    - 临时表、测试表、日志表通常不需要一致性检查
+#
+# 9. YAML格式的优势：
+#    - 支持多行SQL，便于阅读和维护
+#    - 不受SQL中分号影响
+#    - 支持注释，便于文档化
+#    - 层次结构清晰，易于理解

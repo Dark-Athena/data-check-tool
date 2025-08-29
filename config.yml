@@ -1,0 +1,71 @@
+# Oracle与GaussDB数据一致性校验工具配置文件
+
+# 数据库连接配置
+databases:
+  oracle:
+    url: "jdbc:oracle:thin:@192.168.163.227:1527:pdb1"
+    user: "system"
+    password: "SysPassword1"
+    driver_jar: "ojdbc8-12.2.0.1.jar"
+  
+  gauss:
+    url: "jdbc:postgresql://192.168.163.131:7456/testdb?loggerLevel=off"
+    user: "ogadmin"
+    password: "Mogdb@123"
+    driver_jar: "gsjdbc4-1.1.jar"
+
+# 性能配置
+performance:
+  thread_count: 10
+
+# 检查范围配置
+check_scope:
+  # Schema映射配置：Oracle schema -> GaussDB schema
+  schema_mapping:
+    system: public        # Oracle的system schema映射到GaussDB的public schema
+    hr: hr_schema         # Oracle的hr schema映射到GaussDB的hr_schema
+    # oracle_schema: gauss_schema
+  
+  # Schema列表：自动从Oracle中查询指定schema下的所有表
+  schemas:
+    # - hr                # 将自动查询hr schema下的所有表
+    # - sales             # 将自动查询sales schema下的所有表
+  
+  # 需要对比的表列表（支持 schema.table 格式）
+  tables:
+    - system.test_checksum_table
+    - schema.table_name
+    - SYSTEM.t_big_table
+  
+  # 剔除表清单：从自动发现和手动配置的表中排除指定表
+  exclude_tables:
+    # - system.unwanted_table     # 排除不需要检查的表
+    # - hr.temp_table             # 排除临时表
+    # - "*.log$"                  # 支持通配符模式（以log结尾的表）
+  
+  # 自定义SQL查询列表
+  custom_sqls:
+     - name: "test"
+       sql: |
+         SELECT * FROM system.test_checksum_table 
+         WHERE rownum<=10 
+           AND id>4
+    
+    # - name: "活跃用户统计"
+    #   sql: |
+    #     SELECT user_id, count(*) as order_count
+    #     FROM orders 
+    #     WHERE create_time > sysdate - 30
+    #     GROUP BY user_id
+    #     HAVING count(*) > 5
+    
+    # - name: "包含分号的查询示例"
+    #   sql: |
+    #     SELECT product_name,
+    #            CASE 
+    #              WHEN price > 100 THEN 'High; Premium'
+    #              WHEN price > 50 THEN 'Medium; Standard'
+    #              ELSE 'Low; Basic'
+    #            END as price_category
+    #     FROM products
+    #     WHERE description LIKE '%special; offer%'
