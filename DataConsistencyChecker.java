@@ -194,8 +194,8 @@ public class DataConsistencyChecker {
         if (gaussUrl == null || gaussUser == null || gaussPassword == null) {
             throw new IllegalArgumentException("GaussDB database configuration incomplete");
         }
-        if (tableList.isEmpty() && customSqlList.isEmpty()) {
-            throw new IllegalArgumentException("Must configure at least one table name or custom SQL");
+        if (schemaList.isEmpty() && tableList.isEmpty() && customSqlList.isEmpty()) {
+            throw new IllegalArgumentException("Must configure at least one schema name, table name, or custom SQL");
         }
     }
     
@@ -760,7 +760,7 @@ public class DataConsistencyChecker {
             
             for (String key : allKeys) {
                 writer.println("Check item: " + key);
-                writer.println("=" + "=".repeat(50 + key.length()));
+                writer.println("=" + "========================================");
                 
                 // Check if this item failed during SQL generation
                 String sqlGenError = sqlGenErrors.get(key);
