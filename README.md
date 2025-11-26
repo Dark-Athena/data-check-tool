@@ -30,6 +30,7 @@
 - 相应的JDBC驱动jar包
 - SnakeYAML库（放置在lib目录下）
 - ORACLE服务端 19c以上 (12c实测不支持)
+- GaussDB服务端存储中文字符集仅支持UTF8 (ORACLE源端无存储字符集要求，因为数据转成JSON时会自动转成UTF8)
 
 ## 安装步骤
 
@@ -117,6 +118,12 @@ check_scope:
     system: public        # Oracle的system schema映射到GaussDB的public schema
     hr: hr_schema         # Oracle的hr schema映射到GaussDB的hr_schema
   
+  # 字段名映射（可选）：解决GaussDB中保留字或不同命名的问题
+  # 配置格式：Oracle字段名 -> GaussDB字段名
+  column_mapping:
+    limit: limitval             # Oracle字段LIMIT在GaussDB中改名为limitval
+    order: order_col            # Oracle字段ORDER在GaussDB中改名为order_col
+    
   # Schema列表：自动从Oracle中查询指定schema下的所有表
   schemas:
     - system              # 自动查询system schema下的所有表并加入检查范围
@@ -261,7 +268,7 @@ check_scope:
 
 ## 注意事项
 
-1. **权限要求**: 确保Oracle用户有DBA_TABLES及查询表的权限
+1. **权限要求**: 确保Oracle用户有DBA_TABLES及查询表的权限、dbms_crypto的执行权限
 2. **网络连接**: 确保可以同时连接到Oracle和GaussDB
 3. **资源使用**: 并发线程数建议根据数据库性能调整
 4. **数据类型**: 工具会跳过某些不支持的数据类型（如BLOB、CLOB等）
