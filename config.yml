@@ -23,9 +23,14 @@ check_scope:
   # Schema映射配置：Oracle schema -> GaussDB schema
   schema_mapping:
     system: public        # Oracle的system schema映射到GaussDB的public schema
-    hr: hr_schema         # Oracle的hr schema映射到GaussDB的hr_schema
+    #hr: hr_schema         # Oracle的hr schema映射到GaussDB的hr_schema
     # oracle_schema: gauss_schema
-  
+
+  # 字段名映射： Oracle 字段名 -> GaussDB 字段名  
+  column_mapping:
+    limit: limitval
+    # oracle_columnname: gauss_columnname
+
   # Schema列表：自动从Oracle中查询指定schema下的所有表
   schemas:
     # - hr                # 将自动查询hr schema下的所有表
@@ -33,9 +38,9 @@ check_scope:
   
   # 需要对比的表列表（支持 schema.table 格式）
   tables:
-    - system.test_checksum_table
-    - schema.table_name
-    - SYSTEM.t_big_table
+    - system.test_keyword
+    #- schema.table_name
+    #- SYSTEM.t_big_table
   
   # 剔除表清单：从自动发现和手动配置的表中排除指定表
   exclude_tables:

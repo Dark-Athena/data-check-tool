@@ -57,6 +57,13 @@ check_scope:
     - finance.orders    # FINANCE schema下的订单表
     - products          # 当前用户下的产品表（不指定schema）
     # - schema.table_name
+
+  # 字段名映射（可选）：解决GaussDB中保留字或不同命名的问题
+  # 配置格式：Oracle字段名 -> GaussDB字段名
+  column_mapping:
+    limit: limitval             # Oracle字段LIMIT在GaussDB中改名为limitval
+    order: order_col            # Oracle字段ORDER在GaussDB中改名为order_col
+    # oracle_column: gauss_column
   
   # 方式2: 自动发现schema中的所有表（适用于大批量表检查）
   # 会自动查询Oracle的dba_tables视图获取指定schema下的所有表
@@ -252,6 +259,7 @@ exclude_tables:
 # 1. 确保Oracle用户具有以下权限：
 #    - SELECT on DBA_TABLES 
 #    - SELECT on 所有待检查的表
+#    - execute on dbms_crypto
 #
 # 2. 确保GaussDB用户具有以下权限：
 #    - SELECT on 所有待检查的表
@@ -264,6 +272,7 @@ exclude_tables:
 #
 # 6. 新功能说明：
 #    - schema_mapping: 支持Oracle与GaussDB之间的schema名称映射
+#    - column_mapping: 支持字段级别映射，解决保留字或字段名差异
 #    - schemas: 支持自动发现schema中的所有表，无需手工列举
 #    - exclude_tables: 支持排除不需要检查的表，支持通配符模式
 #    - 可以混合使用tables、schemas、custom_sqls三种方式

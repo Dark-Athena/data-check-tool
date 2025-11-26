@@ -29,6 +29,7 @@ public class DataConsistencyChecker {
     private List<String> excludeTableList;  // Exclude table list
     private List<CustomSql> customSqlList;
     private Map<String, String> schemaMapping;
+    private Map<String, String> columnMapping;
     private boolean initializeOracleFunctions;
     private String createScriptPath;
     private boolean dropOracleFunctions;
@@ -133,6 +134,27 @@ public class DataConsistencyChecker {
                 schemaMapping.putAll(schemaMappingConfig);
                 System.out.println("Loaded schema mapping config: " + schemaMapping);
             }
+
+            // Load column mapping
+            columnMapping = new HashMap<>();
+            @SuppressWarnings("unchecked")
+            Map<String, String> columnMappingConfig = (Map<String, String>) checkScope.get("column_mapping");
+            if (columnMappingConfig != null) {
+                for (Map.Entry<String, String> entry : columnMappingConfig.entrySet()) {
+                    if (entry.getKey() == null || entry.getValue() == null) {
+                        continue;
+                    }
+                    String oracleColumn = entry.getKey().trim();
+                    String gaussColumn = entry.getValue().trim();
+                    if (oracleColumn.isEmpty() || gaussColumn.isEmpty()) {
+                        continue;
+                    }
+                    columnMapping.put(oracleColumn.toUpperCase(Locale.ROOT), gaussColumn.toUpperCase(Locale.ROOT));
+                }
+                if (!columnMapping.isEmpty()) {
+                    System.out.println("Loaded column mapping config: " + columnMapping);
+                }
+            }
             
             // Load table list
             tableList = new ArrayList<>();
@@ -179,6 +201,7 @@ public class DataConsistencyChecker {
             excludeTableList = new ArrayList<>();
             customSqlList = new ArrayList<>();
             schemaMapping = new HashMap<>();
+            columnMapping = new HashMap<>();
         }
         
         validateConfig();
@@ -495,92 +518,108 @@ public class DataConsistencyChecker {
      */
     private String[] generateFormattedSql(Connection conn, String baseSql) throws SQLException {
         String[] result = new String[2]; // [0]=Oracle SQL, [1]=Gauss SQL
+        String columnMappingJson = buildColumnMappingJson();
         
-        try (CallableStatement cstmt = conn.prepareCall(" declare\n" +
-            "i_sql varchar2(32767):=?;\n" + 
-            "    G_RTRIM_CHAR varchar2(1):='Y';\n" + 
-            "    l_col_name_str VARCHAR2(32767); --字段名串\n" + 
-            "    l_curid        INTEGER;\n" + 
-            "    l_cnt          NUMBER;\n" + 
-            "    l_desctab      dbms_sql.desc_tab;\n" + 
-            "    l_col_name     VARCHAR2(255);\n" + 
-            "    l_format_col   VARCHAR2(255);\n" + 
-            "    l_col_type     VARCHAR2(255);\n" + 
-            "  -- PRAGMA AUTONOMOUS_TRANSACTION;\n" + 
-            "  BEGIN\n" + 
-            "    l_curid := dbms_sql.open_cursor();\n" + 
-            "    dbms_sql.parse(l_curid, i_sql, dbms_sql.native);\n" + 
-            "    dbms_sql.describe_columns(l_curid, l_cnt, l_desctab);\n" + 
-            "    FOR i IN 1 .. l_desctab.count LOOP\n" + 
-            "      l_col_name := l_desctab(i).col_name;\n" + 
-            "      l_col_type := l_desctab(i).col_type;\n" + 
-            "\n" + 
-            "      IF l_col_type NOT IN (DBMS_SQL.Raw_Type,\n" + 
-            "                        DBMS_SQL.Long_Raw_Type,\n" + 
-            "                        DBMS_SQL.MLSLabel_Type,\n" + 
-            "                        DBMS_SQL.User_Defined_Type,\n" + 
-            "                        DBMS_SQL.Ref_Type,\n" + 
-            "                        DBMS_SQL.Clob_Type,\n" + 
-            "                        DBMS_SQL.Blob_Type,\n" + 
-            "                        DBMS_SQL.Interval_Year_to_Month_Type,\n" + 
-            "                        DBMS_SQL.Interval_Day_To_Second_Type,\n" + 
-            "                        DBMS_SQL.Urowid_Type) THEN\n" + 
-            "\n" + 
-            "      if l_col_type in (dbms_Sql.Date_Type) THEN\n" + 
-            "        l_format_col := 'to_char(' || l_col_name || ',''yyyymmddhh24miss'')||''000000''';\n" + 
-            "      ELSIF l_col_type IN\n" + 
-            "            (dbms_Sql.Timestamp_Type,\n" + 
-            "             dbms_Sql.Timestamp_With_TZ_Type,\n" + 
-            "             dbms_Sql.Timestamp_With_Local_TZ_type) then\n" + 
-            "        l_format_col := 'to_char(' || l_col_name ||\n" + 
-            "                      ',''yyyymmddhh24missff6'')';\n" + 
-            "      elsif l_col_type in (dbms_sql.Number_Type,\n" + 
-            "                           dbms_sql.Binary_Float_Type,\n" + 
-            "                           dbms_Sql.Binary_Double_Type) then\n" + 
-            "        l_format_col := 'to_char(' || l_col_name ||\n" + 
-            "                      ',''fm99999999999999999999999999999.00000000'')';\n" + 
-            "      elsif G_RTRIM_CHAR='Y' and l_col_type in (dbms_Sql.Char_Type ) then\n" + 
-            "        l_format_col:='rtrim('||l_col_name||')';\n" + 
-            "      else\n" + 
-            "        l_format_col := l_col_name;\n" + 
-            "      end if;\n" + 
-            "      END IF;\n" + 
-            "\n" + 
-            "      l_col_name_str := l_col_name_str || CASE\n" + 
-            "                          WHEN l_col_name_str IS NULL THEN\n" + 
-            "                           NULL\n" + 
-            "                          ELSE\n" + 
-            "                           ','\n" + 
-            "                        END || l_format_col ||' AS '||'\"'||l_desctab(i).col_name||'\"';\n" + 
-            "    END LOOP;\n" + 
-            "    dbms_sql.close_cursor(l_curid);\n" + 
-            "    if l_col_name_str is not null then\n" + 
-            "\n" + 
-            "      ? := 'select count(1) as cnt,sum((''x''||substr(a,1,8))::bit(32)::int4::numeric/4 +'||\n" + 
-            "                   '(''x''||substr(a,9,8))::bit(32)::int4::numeric/4 +'||\n" + 
-            "                   '(''x''||substr(a,17,8))::bit(32)::int4::numeric/4 +'||\n" + 
-            "                   '(''x''||substr(a,25,8))::bit(32)::int4::numeric/4 '||\n" + 
-            "                   ') as cksum from (select /*+no_expand*/ md5(row_to_json(t)::text) a from (select '\n" + 
-            "                   || l_col_name_str||' from (' || i_sql || ') )t )';\n" + 
-            "      ? := 'with function uf_raw2int(input raw,pos number,len number) return number is\n" +
-            "begin\n" +
-            "  return utl_raw.cast_to_binary_integer(utl_raw.substr(input,pos,len));\n" +
-            "end;\n" +
-            "select count(1) as cnt,sum(uf_raw2int(a,0,4)/4+'||\n" + 
-            "        'uf_raw2int(a,5,4)/4+'||\n" + 
-            "        'uf_raw2int(a,9,4)/4+'||\n" + 
-            "        'uf_raw2int(a,13,4)/4) as cksum from'||\n" + 
-            "        '(select  dbms_crypto.hash(JSON_OBJECT(T.* RETURNING blob),2) a from (select '\n" + 
-            "                || l_col_name_str||' from (' || i_sql || ') )t )';\n" + 
-            "    end if;\n" + 
-            "  END; ")) {
+        try (CallableStatement cstmt = conn.prepareCall("declare\n" +
+            "     i_sql varchar2(32767):=?;\n" +
+            "     G_RTRIM_CHAR varchar2(1):='Y';\n" +
+            "     l_col_name_str_ora VARCHAR2(32767);\n" +
+            "     l_col_name_str_gauss VARCHAR2(32767);\n" +
+            "     l_curid        INTEGER;\n" +
+            "     l_cnt          NUMBER;\n" +
+            "     l_desctab      dbms_sql.desc_tab;\n" +
+            "     l_col_name     VARCHAR2(255);\n" +
+            "     l_format_col_ora   VARCHAR2(255);\n" +
+            "     l_format_col_gauss   VARCHAR2(255);\n" +
+            "     l_col_type     VARCHAR2(255);\n" +
+            "     gauss_Sql varchar2(32767);\n" +
+            "     oracle_sql varchar2(32767);\n" +
+            "     l_col_map json_object_t:=json_object_t.parse(UPPER(?));\n" +
+            "\n" +
+            "   BEGIN\n" +
+            "     l_curid := dbms_sql.open_cursor();\n" +
+            "     dbms_sql.parse(l_curid, i_sql, dbms_sql.native);\n" +
+            "     dbms_sql.describe_columns(l_curid, l_cnt, l_desctab);\n" +
+            "     FOR i IN 1 .. l_desctab.count LOOP\n" +
+            "       l_col_name := l_desctab(i).col_name;\n" +
+            "       l_col_type := l_desctab(i).col_type;\n" +
+            "\n" +
+            "       IF l_col_type NOT IN (DBMS_SQL.Raw_Type,\n" +
+            "                         DBMS_SQL.Long_Raw_Type,\n" +
+            "                         DBMS_SQL.MLSLabel_Type,\n" +
+            "                         DBMS_SQL.User_Defined_Type,\n" +
+            "                         DBMS_SQL.Ref_Type,\n" +
+            "                         DBMS_SQL.Clob_Type,\n" +
+            "                         DBMS_SQL.Blob_Type,\n" +
+            "                         DBMS_SQL.Interval_Year_to_Month_Type,\n" +
+            "                         DBMS_SQL.Interval_Day_To_Second_Type,\n" +
+            "                         DBMS_SQL.Urowid_Type) THEN\n" +
+            "\n" +
+            "       if l_col_type in (dbms_Sql.Date_Type) THEN\n" +
+            "         l_format_col_ora  := 'to_char(' || l_col_name || ',''yyyymmddhh24miss'')||''000000''';\n" +
+            "         l_format_col_gauss:= 'to_char(' || nvl(l_col_map.get_string(l_col_name),l_col_name) || ',''yyyymmddhh24miss'')||''000000''';\n" +
+            "       ELSIF l_col_type IN\n" +
+            "             (dbms_Sql.Timestamp_Type,\n" +
+            "              dbms_Sql.Timestamp_With_TZ_Type,\n" +
+            "              dbms_Sql.Timestamp_With_Local_TZ_type) then\n" +
+            "         l_format_col_ora  := 'to_char(' || l_col_name || ',''yyyymmddhh24missff6'')';\n" +
+            "         l_format_col_gauss:= 'to_char(' || nvl(l_col_map.get_string(l_col_name),l_col_name) || ',''yyyymmddhh24missff6'')';\n" +
+            "       elsif l_col_type in (dbms_sql.Number_Type,\n" +
+            "                            dbms_sql.Binary_Float_Type,\n" +
+            "                            dbms_Sql.Binary_Double_Type) then\n" +
+            "         l_format_col_ora  := 'to_char(' || l_col_name || ',''fm99999999999999999999999999999.00000000'')';\n" +
+            "         l_format_col_gauss:= 'to_char(' || nvl(l_col_map.get_string(l_col_name),l_col_name) || ',''fm99999999999999999999999999999.00000000'')';\n" +
+            "       elsif G_RTRIM_CHAR='Y' and l_col_type in (dbms_Sql.Char_Type ) then\n" +
+            "         l_format_col_ora  :='rtrim('||l_col_name||')';\n" +
+            "         l_format_col_gauss:='rtrim('||nvl(l_col_map.get_string(l_col_name),l_col_name)||')';\n" +
+            "       else\n" +
+            "         l_format_col_ora := l_col_name;\n" +
+            "         l_format_col_gauss := nvl(l_col_map.get_string(l_col_name),l_col_name);\n" +
+            "       end if;\n" +
+            "       END IF;\n" +
+            "\n" +
+            "       l_col_name_str_ora := l_col_name_str_ora || CASE\n" +
+            "                           WHEN l_col_name_str_ora IS NULL THEN\n" +
+            "                            NULL\n" +
+            "                           ELSE\n" +
+            "                            ','\n" +
+            "                         END || l_format_col_ora ||' AS '||'\"'||l_desctab(i).col_name||'\"';\n" +
+            "       l_col_name_str_gauss := l_col_name_str_gauss || CASE\n" +
+            "                           WHEN l_col_name_str_gauss IS NULL THEN\n" +
+            "                            NULL\n" +
+            "                           ELSE\n" +
+            "                            ','\n" +
+            "                         END || l_format_col_gauss ||' AS '||'\"'||l_desctab(i).col_name||'\"';\n" +
+            "     END LOOP;\n" +
+            "     dbms_sql.close_cursor(l_curid);\n" +
+            "     if l_col_name_str_ora is not null then\n" +
+            "\n" +
+            "       ? := 'select count(1) as cnt,sum((''x''||substr(a,1,8))::bit(32)::int4::numeric/4 +'||\n" +
+            "                    '(''x''||substr(a,9,8))::bit(32)::int4::numeric/4 +'||\n" +
+            "                    '(''x''||substr(a,17,8))::bit(32)::int4::numeric/4 +'||\n" +
+            "                    '(''x''||substr(a,25,8))::bit(32)::int4::numeric/4 '||\n" +
+            "                    ') as cksum from (select /*+no_expand*/ md5(row_to_json(t)::text) a from (select ' \n" +
+            "                    || l_col_name_str_gauss||' from (' || i_sql || ') )t )';\n" +
+            "       ? := 'with function uf_raw2int(input raw,pos number,len number) return number is\n" +
+            " begin\n" +
+            "   return utl_raw.cast_to_binary_integer(utl_raw.substr(input,pos,len));\n" +
+            " end;\n" +
+            " select count(1) as cnt,sum(uf_raw2int(a,0,4)/4+'||\n" +
+            "         'uf_raw2int(a,5,4)/4+'||\n" +
+            "         'uf_raw2int(a,9,4)/4+'||\n" +
+            "         'uf_raw2int(a,13,4)/4) as cksum from'||\n" +
+            "         '(select  dbms_crypto.hash(JSON_OBJECT(T.* RETURNING blob),2) a from (select ' \n" +
+            "                 || l_col_name_str_ora||' from (' || i_sql || ') )t )';\n" +
+            "     end if;\n" +
+            "   END; ")) {
             cstmt.setString(1, baseSql);
-            cstmt.registerOutParameter(2, Types.VARCHAR);
+            cstmt.setString(2, columnMappingJson);
             cstmt.registerOutParameter(3, Types.VARCHAR);
+            cstmt.registerOutParameter(4, Types.VARCHAR);
             cstmt.execute();
             
-            result[0] = cstmt.getString(3); // Oracle SQL (using GAUSS_CHECKSUM)
-            String gaussSql = cstmt.getString(2); // Gauss SQL (using checksum)
+            result[0] = cstmt.getString(4); // Oracle SQL (using GAUSS_CHECKSUM)
+            String gaussSql = cstmt.getString(3); // Gauss SQL (using checksum)
             
             // Apply schema mapping to GaussDB SQL
             result[1] = applySchemaMapping(gaussSql);
@@ -601,6 +640,43 @@ public class DataConsistencyChecker {
         }
         
         return result;
+    }
+    
+    /**
+     * Build JSON string for column mapping configuration
+     */
+    private String buildColumnMappingJson() {
+        if (columnMapping == null || columnMapping.isEmpty()) {
+            return "{}";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append('{');
+        Iterator<Map.Entry<String, String>> iterator = columnMapping.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, String> entry = iterator.next();
+            sb.append('"')
+              .append(escapeJson(entry.getKey()))
+              .append('"')
+              .append(':')
+              .append('"')
+              .append(escapeJson(entry.getValue()))
+              .append('"');
+            if (iterator.hasNext()) {
+                sb.append(',');
+            }
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+    
+    /**
+     * Basic JSON string escaping helper
+     */
+    private String escapeJson(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
     
     /**
